@@ -9,6 +9,7 @@ import {
   getTranscriptionText,
   consumeConfirmedTranscriptionText,
   consumeTranscriptionText,
+  getConfirmedTranscriptionLines,
   isTranscriptionListening,
   subscribeTranscription
 } from '../transcription'
@@ -19,7 +20,8 @@ import type {
   AssistantMode,
   ChatDocument,
   ChatMessageSource,
-  ChatRequestResult
+  ChatRequestResult,
+  TranscriptionSpeaker
 } from '../../preload/contracts'
 import { createChatModelText, normalizeChatDocuments } from './chat-documents'
 import { extractErrorMessage } from './errors'
@@ -42,7 +44,16 @@ import {
 let chatConversationMessages: ModelMessage[] = []
 const chatHistoryTail = new ChatHistoryTail()
 
-const autoReplyTurn = new AutoReplyTurn()
+/** Whose speech asks the questions in the active chat conversation */
+function asksQuestions(speaker: TranscriptionSpeaker | null | undefined): boolean {
+  return shouldTriggerAutoReply(speaker, activeConversation('chat').persona)
+}
+
+const autoReplyTurn = new AutoReplyTurn({
+  transcript: { pending: getConfirmedTranscriptionLines, take: consumeConfirmedTranscriptionText },
+  asks: asksQuestions,
+  onSettled: () => sendAutoReplyTurn()
+})
 let autoReplyNotice: string | null = null
 
 registerStreamPersister('chat', () => saveConversationModels('chat', chatConversationMessages))
@@ -152,9 +163,9 @@ function notifyAutoReplyIssue(message: string): void {
 }
 
 function handleTranscriptionEvent(event: TranscriptionEvent): void {
-  const triggers = shouldTriggerAutoReply(event.speaker, activeConversation('chat').persona)
+  const asks = asksQuestions(event.speaker)
   if (event.isPartial) {
-    if (triggers) autoReplyTurn.touch()
+    if (asks) autoReplyTurn.touch(event.utterance ?? '')
     return
   }
 
@@ -167,7 +178,8 @@ function handleTranscriptionEvent(event: TranscriptionEvent): void {
   if (state.transcriptionPaused) return skip('paused')
   // The last result after a stop stays in the transcript for a manual send
   if (!isTranscriptionListening()) return skip('stopped')
-  if (!triggers) return skip('own-speech')
+  // My answers stay in the transcript and ride along with the interviewer's next question
+  if (!asks) return skip('own-speech')
 
   if (!isChatConfigured()) {
     skip('chat-unconfigured')
@@ -175,20 +187,12 @@ function handleTranscriptionEvent(event: TranscriptionEvent): void {
     return
   }
 
-  // My confirmed answers ride along with the interviewer's question; a partial
-  // I'm still speaking stays in the transcript.
-  const fragment = consumeConfirmedTranscriptionText()
-  if (!fragment.trim()) return skip('empty')
-  autoReplyTurn.append(fragment)
-  logTimeline('auto-reply-append', {
-    speaker: event.speaker,
-    reason: event.reason,
-    chars: fragment.length
-  })
-  sendAutoReplyTurn()
+  // The request goes out once the speaker stays quiet for a moment (onSettled)
+  const { complete, waitMs } = autoReplyTurn.hear()
+  logTimeline('auto-reply-hear', { speaker: event.speaker, reason: event.reason, complete, waitMs })
 }
 
-/** Sends the voice turn when it says something new; it replaces the chat answer being written */
+/** Sends the voice turn once it settles on a question; it replaces the chat answer being written */
 export function sendAutoReplyTurn(): void {
   if (
     isConversationTransitioning() ||
@@ -201,8 +205,12 @@ export function sendAutoReplyTurn(): void {
     return
   }
 
-  const text = autoReplyTurn.pendingRequest
-  if (!text) return
+  const request = autoReplyTurn.pendingRequest
+  if (!request) {
+    const discarded = autoReplyTurn.discardUnanswered()
+    if (discarded) logTimeline('auto-reply-skip', { why: 'no-question', text: discarded })
+    return
+  }
 
   const currentStream = getCurrentStream()
   if (currentStream && currentStream.kind !== 'chat') {
@@ -210,7 +218,7 @@ export function sendAutoReplyTurn(): void {
     publishAutoReplyState()
     return
   }
-  const validationError = validateChatRequest(text, [], true)
+  const validationError = validateChatRequest(request.text, [], true)
   if (validationError) {
     notifyAutoReplyIssue(validationError)
     publishAutoReplyState()
@@ -218,16 +226,19 @@ export function sendAutoReplyTurn(): void {
   }
 
   logTimeline('auto-reply-send', {
-    chars: text.length,
+    chars: request.text.length,
+    replaces: request.replacesRequestId,
     interrupts: currentStream?.requestId ?? null
   })
   // The user-stop path closes the interrupted answer in the renderer before the turn starts
   interruptChatStream(false)
-  const replacesRequestId = autoReplyTurn.requestId ?? undefined
   const requestId = randomUUID()
-  autoReplyTurn.markSent(requestId)
+  autoReplyTurn.markSent(request, requestId)
   autoReplyNotice = null
-  acceptChatRequest(text, 'transcription', [], { requestId, replacesRequestId })
+  acceptChatRequest(request.text, 'transcription', [], {
+    requestId,
+    replacesRequestId: request.replacesRequestId ?? undefined
+  })
   publishAutoReplyState()
 }
 
@@ -439,6 +450,8 @@ ipcMain.handle('sendTranscriptionToChat', () => {
 })
 
 ipcMain.handle('clearAutoReplyQueue', () => {
+  // The waiting question is still in the transcript until a request takes it
+  if (autoReplyTurn.pendingRequest) consumeConfirmedTranscriptionText()
   clearAutoReplyTurn()
   return true
 })
@@ -464,5 +477,7 @@ subscribeAppSettings((_nextSettings, patch) => {
   }
   if ('transcriptionAutoReply' in patch) {
     autoReplyNotice = null
+    // A question heard before turning auto reply off stays in the transcript for a manual send
+    if (!settings.transcriptionAutoReply) clearAutoReplyTurn()
   }
 })

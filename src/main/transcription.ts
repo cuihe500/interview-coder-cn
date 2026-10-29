@@ -9,7 +9,7 @@ import {
   type TranscriptionSpeaker,
   type TranscriptionStatus
 } from '../preload/contracts'
-import { SpeakerTranscript, speakerForChannel } from './transcription-speakers'
+import { SpeakerTranscript, speakerForChannel, type SpeakerText } from './transcription-speakers'
 import { logTimeline } from './transcription-timeline'
 import { parseVolcengineUtterances, VolcengineUtteranceTracker } from './transcription-volcengine'
 import appConfig from '../../app.config.json'
@@ -66,6 +66,8 @@ export type TranscriptionEvent = {
   isPartial: boolean
   reason?: TranscriptionEventReason
   speaker?: TranscriptionSpeaker | null
+  /** Partial events: what the provider currently hears of the speaker's unfinished utterance */
+  utterance?: string
 }
 
 type VolcengineFrame = {
@@ -112,7 +114,8 @@ function sendTranscriptText(isPartial: boolean): void {
 function publishTranscription(
   speaker: TranscriptionSpeaker | null,
   isPartial: boolean,
-  reason?: TranscriptionEventReason
+  reason?: TranscriptionEventReason,
+  utterance?: string
 ): void {
   // A silence fallback may still be revised by the provider, so only provider
   // results and the final flush are frozen into the ordered speaker history.
@@ -121,7 +124,8 @@ function publishTranscription(
     text: getTranscriptionText(),
     isPartial,
     reason,
-    speaker
+    speaker,
+    utterance
   }
   sendTranscriptText(isPartial)
   transcriptionListeners.forEach((listener) => {
@@ -168,7 +172,9 @@ function publishPartial(session: TranscriptionSession, text: string): void {
   const speaker = speakerOf(session)
   const before = transcript.getSpeakerText(speaker)
   transcript.updatePartial(speaker, text)
-  if (transcript.getSpeakerText(speaker) !== before) publishTranscription(speaker, true)
+  if (transcript.getSpeakerText(speaker) !== before) {
+    publishTranscription(speaker, true, undefined, text)
+  }
   schedulePartialFinalization(session)
 }
 
@@ -806,6 +812,11 @@ export function consumeTranscriptionText(): string {
   logTimeline('consume', { mode: 'all', text })
   sendTranscriptText(false)
   return text
+}
+
+/** Confirmed text of every speaker that nothing has taken yet */
+export function getConfirmedTranscriptionLines(): SpeakerText[] {
+  return transcript.getConfirmedLines()
 }
 
 /** Takes confirmed text of every speaker and leaves unconfirmed partials in place */
