@@ -171,6 +171,9 @@ const api = {
       | 'sendTranscriptionToChat'
   ) => ipcRenderer.invoke('triggerAction', action),
   setToolbarVisible: (visible: boolean) => ipcRenderer.invoke('setToolbarVisible', visible),
+  // Clicking the overlay must not steal focus from the window underneath; only
+  // text fields ask for a focusable window.
+  setWindowFocusable: (focusable: boolean) => ipcRenderer.invoke('setWindowFocusable', focusable),
 
   // Settings the toolbar window needs, pushed from main (its own store is a separate copy)
   onSyncToolbarSettings: (callback: (settings: { hoverDelay: number }) => void) => {

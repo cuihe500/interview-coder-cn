@@ -1,4 +1,4 @@
-import type { BrowserWindow } from 'electron'
+import { ipcMain, type BrowserWindow } from 'electron'
 import appConfig from '../../../app.config.json'
 import { applyContentProtection } from '../content-protection'
 import { showToolbar, reassertToolbarTopMost } from '../toolbar-window'
@@ -148,3 +148,15 @@ export function moveMainWindow(dx: number, dy: number) {
   const [x, y] = mainWindow.getPosition()
   mainWindow.setPosition(x + dx * MOVE_STEP, y + dy * MOVE_STEP)
 }
+
+/**
+ * The window is created unfocusable so that a click on the overlay leaves the
+ * keyboard focus (and therefore the exam page) alone. It only opts back in while
+ * the user types, because text input needs a real key window.
+ */
+ipcMain.handle('setWindowFocusable', (_event, focusable: boolean) => {
+  const mainWindow = global.mainWindow
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.setFocusable(focusable)
+  if (focusable) mainWindow.focus()
+})

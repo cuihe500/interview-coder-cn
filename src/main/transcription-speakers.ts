@@ -8,6 +8,9 @@ import { TranscriptionBuffer } from './transcription-buffer'
 
 type Speaker = TranscriptionSpeaker | null
 
+/** What one speaker said; speaker is null when only one audio source is captured */
+export type SpeakerText = { speaker: Speaker; text: string }
+
 const SPEAKER_BY_CHANNEL: Record<TranscriptionChannel, TranscriptionSpeaker> = {
   system: 'interviewer',
   microphone: 'me'
@@ -18,7 +21,7 @@ export function speakerForChannel(channel: TranscriptionChannel | null): Speaker
 }
 
 /** Unlabeled text keeps the single-source format: plain concatenation */
-export function formatTranscriptionLines(lines: { speaker: Speaker; text: string }[]): string {
+export function formatTranscriptionLines(lines: SpeakerText[]): string {
   const filled = lines.filter((line) => line.text)
   if (filled.every((line) => line.speaker === null)) {
     return filled.map((line) => line.text).join('')
@@ -124,10 +127,16 @@ export class SpeakerTranscript {
     return text
   }
 
+  /** Confirmed text of every speaker in order, left in place */
+  getConfirmedLines(): SpeakerText[] {
+    return this.collectLines(false).map((line) => ({
+      speaker: line.speaker,
+      text: line.confirmedText
+    }))
+  }
+
   consumeConfirmed(): string {
-    const text = formatTranscriptionLines(
-      this.collectLines(false).map((line) => ({ speaker: line.speaker, text: line.confirmedText }))
-    )
+    const text = formatTranscriptionLines(this.getConfirmedLines())
     this.history = []
     this.forEachChannel((buffer) => buffer.consumeConfirmed())
     return text

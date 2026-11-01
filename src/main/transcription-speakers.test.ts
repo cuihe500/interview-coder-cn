@@ -381,6 +381,26 @@ describe('SpeakerTranscript with two speakers', () => {
   })
 })
 
+describe('SpeakerTranscript.getConfirmedLines', () => {
+  it('lists confirmed text by speaker without taking it', () => {
+    const transcript = createDualTranscript()
+
+    transcript.finishSentence('interviewer', '问题？')
+    transcript.confirm('interviewer', true)
+    transcript.finishSentence('me', '我觉得。')
+    transcript.confirm('me', true)
+    transcript.updatePartial('me', '还没说完')
+
+    expect(transcript.getConfirmedLines()).toEqual([
+      { speaker: 'interviewer', text: '问题？' },
+      { speaker: 'me', text: '我觉得。' }
+    ])
+    expect(transcript.getConfirmedLines()).toEqual(transcript.getConfirmedLines())
+    expect(transcript.consumeConfirmed()).toBe('面试官：问题？\n我：我觉得。')
+    expect(transcript.getText()).toBe('我：还没说完')
+  })
+})
+
 describe('SpeakerTranscript.consumeConfirmed', () => {
   it('keeps the unconfirmed partial of another speaker', () => {
     const transcript = createDualTranscript()
