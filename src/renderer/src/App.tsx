@@ -61,6 +61,7 @@ export default function App() {
         <ThemeController />
         <ToolbarVisibilityController />
         <KnowledgeSyncController />
+        <WindowFocusController />
         <Routes>
           <Route index element={<CoderPage />} />
           <Route path="settings" element={<SettingsPage />} />
@@ -127,6 +128,48 @@ function ToolbarVisibilityController() {
     if (location.pathname === '/toolbar') return
     void window.api.setToolbarVisible(location.pathname === '/' && showOverlayToolbar)
   }, [location.pathname, showOverlayToolbar])
+
+  return null
+}
+
+const TEXT_ENTRY = 'input, textarea'
+
+/**
+ * Proctored test pages count losing the window focus as 切屏, so a click on the
+ * overlay must never activate it: the window is created unfocusable and only a text
+ * field asks for focus back. Management pages behave like a normal window.
+ */
+function WindowFocusController() {
+  const { pathname } = useLocation()
+
+  useEffect(() => {
+    // The toolbar renders this app too, but must not touch the main window's focusability
+    if (pathname === '/toolbar') return
+    if (pathname !== '/') {
+      void window.api.setWindowFocusable(true)
+      return
+    }
+
+    void window.api.setWindowFocusable(false)
+
+    // Every click either lands in a text field (typing needs a real key window) or
+    // anywhere else, which hands the focus back to whatever is underneath.
+    const onPointerDown = (event: PointerEvent) => {
+      const field =
+        event.target instanceof HTMLElement ? event.target.closest<HTMLElement>(TEXT_ENTRY) : null
+      if (!field) {
+        void window.api.setWindowFocusable(false)
+        return
+      }
+      // The window could not take focus for this click, so the caret is placed by hand
+      void window.api
+        .setWindowFocusable(true)
+        .then(() => requestAnimationFrame(() => field.focus()))
+    }
+
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [pathname])
 
   return null
 }

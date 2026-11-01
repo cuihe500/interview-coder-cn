@@ -14,6 +14,9 @@ export function createWindow(): void {
     frame: false,
     transparent: true,
     hasShadow: false,
+    // A click on the overlay must not take focus from the window underneath: online
+    // test pages count that blur as 切屏. The renderer turns this back on for typing.
+    focusable: false,
     alwaysOnTop: true,
     skipTaskbar: true,
     hiddenInMissionControl: true,

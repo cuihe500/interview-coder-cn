@@ -158,6 +158,7 @@ src/
 - `stopSolutionStream` — abort current AI stream
 - `sendFollowUpQuestion` — follow-up within conversation
 - `triggerAction` / `setToolbarVisible` — overlay toolbar: run a shortcut action, toggle the window
+- `setWindowFocusable` — let the main window take keyboard focus, only while a text field is edited
 - `start-transcription` / `stop-transcription` — speech transcription lifecycle
 - `get-transcription-text` / `clear-transcription-text` — read/clear accumulated text
 
@@ -193,6 +194,7 @@ The app is designed to be invisible to screen-sharing software:
 - `setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true })`
 - `keepWindowInFront()` repeatedly reasserts always-on-top for 5 seconds after show
 - `showInactive()` on macOS/Windows to avoid stealing focus
+- `focusable: false` at creation: clicking the overlay never takes focus from the window underneath, because proctored test pages count that blur as 切屏. The renderer calls `setWindowFocusable(true)` only while a text field is edited (and on the management pages), since typing needs a real key window
 
 ### Overlay Toolbar
 
