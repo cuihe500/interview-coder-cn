@@ -27,10 +27,17 @@ import type {
   KnowledgePassage
 } from '../../preload/contracts'
 import { createBuiltinFrontendProfile } from './builtin/frontend'
+import { readKnowledgePreset } from './preset'
 import { type KnowledgeChunkFile, type KnowledgeRetrieval } from './search'
 
 type StoredKnowledgeDocument = KnowledgeDocument & {
   storedFileName: string
+}
+
+type AppliedKnowledgePreset = {
+  version: string
+  profileId: string
+  documentIds: string[]
 }
 
 type KnowledgeManifest = {
@@ -39,6 +46,7 @@ type KnowledgeManifest = {
   builtinFrontendKnowledgeEnabled: boolean
   profiles: KnowledgeProfile[]
   documents: StoredKnowledgeDocument[]
+  appliedPresets: Record<string, AppliedKnowledgePreset>
 }
 
 type ParseWorkerResult =
@@ -60,7 +68,8 @@ const EMPTY_MANIFEST: KnowledgeManifest = {
   activeProfileId: null,
   builtinFrontendKnowledgeEnabled: true,
   profiles: [],
-  documents: []
+  documents: [],
+  appliedPresets: {}
 }
 
 const SUPPORTED_EXTENSIONS = new Set<string>(KNOWLEDGE_DOCUMENT_EXTENSIONS)
@@ -90,7 +99,8 @@ function cloneManifest(): KnowledgeManifest {
   return {
     ...EMPTY_MANIFEST,
     profiles: [],
-    documents: []
+    documents: [],
+    appliedPresets: {}
   }
 }
 
@@ -189,7 +199,11 @@ class KnowledgeService {
             ? parsed.builtinFrontendKnowledgeEnabled
             : true,
         profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
-        documents: Array.isArray(parsed.documents) ? parsed.documents : []
+        documents: Array.isArray(parsed.documents) ? parsed.documents : [],
+        appliedPresets:
+          parsed.appliedPresets && typeof parsed.appliedPresets === 'object'
+            ? parsed.appliedPresets
+            : {}
       }
       if (!this.manifest.profiles.some((profile) => profile.id === this.manifest.activeProfileId)) {
         this.manifest.activeProfileId = null
@@ -213,6 +227,90 @@ class KnowledgeService {
     interruptedIds.forEach((documentId) => {
       void this.processStoredDocument(documentId)
     })
+
+    // Awaited so the first snapshot after a fresh install already shows the preset profile.
+    await this.applyBundledPreset().catch((error) =>
+      console.error('Bundled knowledge preset could not be applied:', error)
+    )
+  }
+
+  private get presetDir(): string | undefined {
+    return app.isPackaged
+      ? join(process.resourcesPath, 'preset-knowledge')
+      : process.env.KNOWLEDGE_PRESET_DIR
+  }
+
+  /**
+   * Imports the job profile an installer bundles and makes it active. It runs once per
+   * preset version, so reinstalling an updated preset switches to it again while user
+   * edits made afterwards (another active profile, unlinked documents) are kept.
+   */
+  private async applyBundledPreset(): Promise<void> {
+    const directory = this.presetDir
+    if (!directory) return
+    const preset = await readKnowledgePreset(directory)
+    if (!preset) return
+    const applied = this.manifest.appliedPresets[preset.id]
+    if (applied?.version === preset.version) return
+
+    const profileId = applied?.profileId ?? `preset-${preset.id}`
+    let profile = this.manifest.profiles.find((candidate) => candidate.id === profileId)
+    if (!profile) {
+      const timestamp = now()
+      profile = {
+        id: profileId,
+        name: cleanSingleLine(preset.profile.name, 80),
+        company: cleanSingleLine(preset.profile.company, 120),
+        role: cleanSingleLine(preset.profile.role, 120),
+        jobDescription: cleanMultiline(preset.profile.jobDescription, 30_000),
+        documentLinks: [],
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+      this.manifest.profiles.push(profile)
+    }
+    if (preset.activate) this.manifest.activeProfileId = profileId
+    await this.saveManifest()
+    this.emitSnapshot()
+
+    const documentIds: string[] = []
+    for (let start = 0; start < preset.filePaths.length; start += KNOWLEDGE_MAX_IMPORT_FILES) {
+      const batch = preset.filePaths.slice(start, start + KNOWLEDGE_MAX_IMPORT_FILES)
+      const result = await this.importDocuments(profileId, batch)
+      if (!result.ok) throw new Error(result.error)
+      if (!result.data) continue
+      documentIds.push(...result.data.importedIds, ...result.data.duplicateIds)
+      result.data.failures.forEach((failure) =>
+        console.error(`Bundled knowledge document failed: ${failure.name}: ${failure.error}`)
+      )
+    }
+
+    // Documents from an older preset version that are no longer bundled.
+    const current = new Set(documentIds)
+    for (const documentId of applied?.documentIds ?? []) {
+      if (current.has(documentId)) continue
+      profile.documentLinks = profile.documentLinks.filter((link) => link.documentId !== documentId)
+      const linkedElsewhere = this.manifest.profiles.some((candidate) =>
+        candidate.documentLinks.some((link) => link.documentId === documentId)
+      )
+      if (!linkedElsewhere) await this.deleteDocument(documentId)
+    }
+
+    // Match by content: a document already imported under another name is reused as is.
+    const keyHashes = new Set(
+      await Promise.all(preset.keyDocumentPaths.map((path) => this.hashFile(path)))
+    )
+    for (const link of profile.documentLinks) {
+      const document = this.manifest.documents.find((candidate) => candidate.id === link.documentId)
+      if (document && current.has(document.id) && keyHashes.has(document.sha256)) {
+        link.priority = 'key'
+      }
+    }
+
+    profile.updatedAt = now()
+    this.manifest.appliedPresets[preset.id] = { version: preset.version, profileId, documentIds }
+    await this.saveManifest()
+    this.emitSnapshot()
   }
 
   private async saveManifest(): Promise<void> {
